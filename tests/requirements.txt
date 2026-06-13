@@ -1,0 +1,14 @@
+# Python reference validator for DocLang v0.6 output.
+#
+# Pinned to an exact version: DocLang 0.x minor releases are breaking, and the
+# emitted XML carries `version="0.6"`, so the validator MUST match.
+#
+# Install into a local venv used by tests/validator.rs (feature-gated):
+#
+#   python3.12 -m venv .venv
+#   .venv/bin/pip install -r tests/requirements.txt
+#   cargo test --features validator-integration
+#
+# CLI used by the integration test (confirmed interface):
+#   .venv/bin/doclang validate <file.xml> -n   # -n = --allow-empty-namespace
+doclang==0.6.0

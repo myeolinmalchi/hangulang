@@ -1,0 +1,14 @@
+/target
+Cargo.lock
+.DS_Store
+**/.DS_Store
+# Ad-hoc conversion outputs (not tracked)
+/output/
+# Ad-hoc converter output (CLI default extension) — but NOT the committed
+# golden corpus, which is the regression baseline and must be tracked.
+*.dclg.xml
+!tests/fixtures/golden/
+!tests/fixtures/golden/*.dclg.xml
+.omc/
+__pycache__/
+.venv/

@@ -1,0 +1,26 @@
+[package]
+name = "hangulang"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust toolkit for semantic extraction from HWP 5.0 / HWPX documents, built on the rhwp parser core"
+repository = "https://github.com/myeolinmalchi/hangulang"
+keywords = ["hwp", "hwpx", "doclang", "converter", "korean"]
+categories = ["parser-implementations", "text-processing"]
+
+[dependencies]
+# rhwp is not published on crates.io (HTTP 403) — pin to exact commit for reproducibility.
+# default-features=false only drops console_error_panic_hook (WASM); it does NOT reduce
+# the native SVG/PDF transitive deps (non-optional under cfg(not(wasm32))) — accepted for v1.
+rhwp = { git = "https://github.com/edwardkim/rhwp", rev = "bc38ff55a7e8acb65aebebe237dca0542480d381", default-features = false }
+thiserror = "2"
+quick-xml = "0.40"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
+# Gates tests that shell out to the Python reference validator (`doclang validate -n`).
+validator-integration = []
