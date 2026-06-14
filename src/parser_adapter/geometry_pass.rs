@@ -335,18 +335,17 @@ fn walk(
         }
 
         // Equation: only body formulas (not cell-internal, not note-internal).
-        RenderNodeType::Equation(e) => {
+        RenderNodeType::Equation(e)
             if !ctx.in_cell
                 && !ctx.in_textbox
                 && !ctx.in_note
                 && e.cell_index.is_none()
-                && e.note_ref.is_none()
+                && e.note_ref.is_none() =>
+        {
+            if let (Some(s), Some(p), Some(c)) =
+                (e.section_index, e.para_index, e.control_index)
             {
-                if let (Some(s), Some(p), Some(c)) =
-                    (e.section_index, e.para_index, e.control_index)
-                {
-                    record(acc, Prov::object(s, p, c), &node.bbox, ctx);
-                }
+                record(acc, Prov::object(s, p, c), &node.bbox, ctx);
             }
         }
 

@@ -411,7 +411,7 @@ pub(crate) fn assemble_section_with_threads(
     let mut emitted_start = false;
     let mut pending_head: Option<Block> = None;
 
-    for (para, blocks) in paras.iter().zip(per_para.into_iter()) {
+    for (para, blocks) in paras.iter().zip(per_para) {
         if is_column_chunk_break(para.column_type) {
             // A new column chunk begins here.  The very first chunk is the
             // ThreadStart; later chunks are continuations.
