@@ -318,7 +318,7 @@ venv가 없으면 검증기 테스트는 자동으로 건너뜁니다.
 
 ## 라이선스
 
-MIT. [`Cargo.toml`](Cargo.toml) 참고.
+MIT. 자세한 내용은 [`LICENSE`](LICENSE)를 참고하세요.
 
 본 프로젝트는 독립적인 오픈소스 프로젝트입니다. HWP/HWPX는 한글과컴퓨터(Hancom
 Inc.)의 포맷이며, 본 프로젝트는 한컴과 제휴 관계가 없습니다. DocLang은 LF AI &
