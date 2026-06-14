@@ -10,13 +10,13 @@ v0.6**입니다. DocLang은 LF AI & Data Foundation이 만든 AI 네이티브 ·
 `hangulang`은 [`rhwp`](https://github.com/edwardkim/rhwp) 파서 코어 위에서
 문서의 의미 구조(제목, 목록, 표, 인라인 서식, 수식, 각주, 머리말/꼬리말),
 이미지 리소스, 손실 보고, 그리고 — 선택적으로 — 레이아웃 좌표(bounding box)를
-안정적인 내부 IR로 낮춥니다. DocLang 변환은 이 IR 위에 올라간 첫 번째 출력
-타깃이며, 장기적으로 JSON/Markdown/Python/문서 AI 파이프라인 연동을 같은
-경계에서 제공하는 것을 목표로 합니다.
+안정적인 내부 IR로 낮춥니다. 현재 이 IR에서 DocLang XML, semantic payload,
+Markdown, resource asset/URI 참조를 직접 생성합니다.
 
 > **상태:** v0.1 — 활발히 개발 중. 현재 DocLang exporter 출력은 공식 DocLang
-> 레퍼런스 검증기(`doclang validate`)로 검증됩니다. 현재 매핑 범위는
-> [커버리지](#커버리지)를 참고하세요.
+> 레퍼런스 검증기(`doclang validate`)로 검증됩니다. JSON/Markdown/resource
+> exporter와 rhwp 기반 bbox join은 unit/golden 테스트로 검증합니다. 현재 매핑
+> 범위는 [커버리지](#커버리지)를 참고하세요.
 
 ---
 
@@ -126,6 +126,16 @@ for asset in outcome.assets {
 }
 ```
 
+### 출력 API
+
+| API | 출력 | 비고 |
+|-----|------|------|
+| `convert` | DocLang XML, assets, `LossReport` | 기존 primary exporter |
+| `extract_semantic` | `SirDocument`, `LocationMap`, `LossReport` | exporter를 직접 만들 때 사용 |
+| `convert_to_payload` | versioned `SemanticPayload` | Python wrapper / integration용 안정 계약 |
+| `convert_to_json` | pretty JSON 문자열 | `serde` feature 필요 |
+| `convert_to_markdown` | Markdown, assets, `LossReport` | DocLang XML을 거치지 않는 직접 exporter |
+
 ### CLI
 
 ```bash
@@ -164,18 +174,33 @@ let outcome = convert(&data, &opts)?;
 
 ### 레이아웃 좌표 (`--location`)
 
-`with_location`을 활성화하면, 변환기는 `rhwp` 렌더 트리를 통해 각 페이지를
-배치(layout)한 뒤, 좌표를 해석할 수 있는 블록에 DocLang
-`<location value="N" resolution="512"/>` bounding box(`x_min, y_min, x_max,
-y_max`, 0–512 그리드로 정규화)를 부착합니다. 이를 통해 시각적 grounding —
-콘텐츠가 *페이지의 어디에서* 왔는지 — 가 가능해집니다.
+`with_location`을 활성화하면, 변환기는 `rhwp::DocumentCore` 렌더 트리로 각
+페이지를 배치(layout)하고, render node의 `(section, paragraph, control)`
+provenance를 Hangulang IR의 `Prov`와 join합니다. DocLang XML에는
+`<location value="N" resolution="512"/>` 네 개(`x_min, y_min, x_max, y_max`)를
+붙이고, semantic payload에는 `page`, `bbox`, `resolution`, `status`를 기록합니다.
+좌표는 page-relative 0–512 그리드로 정규화됩니다.
 
 ```rust
 let opts = ConvertOptions { with_location: true, ..Default::default() };
 ```
 
-비활성화 시(기본값) 출력은 좌표 없는 빌드와 byte-identical이며, (가볍지 않은)
-페이지 레이아웃 패스는 완전히 생략됩니다.
+비활성화 시(기본값) 출력은 좌표 없는 빌드와 byte-identical이며, 페이지 레이아웃
+패스는 완전히 생략됩니다.
+
+현재 bbox가 붙는 범위:
+
+| IR 블록 | rhwp render node | 처리 방식 |
+|---------|------------------|-----------|
+| 문단 / 제목 / 목록 | `TextLine(section, para)` | 같은 paragraph의 line box를 첫 페이지 안에서 union |
+| 최상위 표 | `Table(section, para, control)` | control provenance로 join; 1x1 wrapper flattening 케이스 허용 |
+| 본문 이미지 | `Image(section, para, control)` | 셀/머리말/꼬리말 내부 이미지는 제외 |
+| 본문 수식 | `Equation(section, para, control)` | 셀/각주 내부 수식은 제외 |
+| 머리말 / 꼬리말 | `Header` / `Footer` group | section의 header/footer control에 연결 |
+
+여러 페이지에 걸친 블록은 첫 페이지에 나타난 segment만 bbox로 사용합니다. Semantic
+payload에서 bbox가 없을 때는 `not_requested`, `no_provenance`, `unresolved`,
+`not_applicable` 중 하나로 이유를 구분합니다.
 
 ---
 
@@ -196,7 +221,7 @@ let opts = ConvertOptions { with_location: true, ..Default::default() };
 | 머리말 / 꼬리말 | `<page_header>` / `<page_footer>` | |
 | 쪽 나누기 | `<page_break/>` | |
 | 다단 연속성 | `<thread>` | |
-| 레이아웃 좌표 *(옵션)* | `<location>` | 최상위 블록; 아래 참고 |
+| 레이아웃 좌표 *(옵션)* | `<location>` / payload `location` | rhwp render tree 기반; 위 범위 참고 |
 
 ### 범위 외 (v1)
 
