@@ -281,6 +281,9 @@ cargo test --features validator-integration    # 공식 doclang 검증기까지 
 cargo clippy --all-targets                     # 린트 (경고 0 기대)
 ```
 
+릴리즈 전 점검과 crates.io publish blocker는
+[`docs/release.md`](docs/release.md)에 정리되어 있습니다.
+
 ### 검증기 연동
 
 `validator-integration` 피처는 변환기 출력을 공식 Python 레퍼런스 검증기로

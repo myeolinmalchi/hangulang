@@ -5,8 +5,22 @@ edition = "2021"
 license = "MIT"
 description = "Rust toolkit for semantic extraction from HWP 5.0 / HWPX documents, built on the rhwp parser core"
 repository = "https://github.com/myeolinmalchi/hangulang"
+homepage = "https://github.com/myeolinmalchi/hangulang"
+documentation = "https://docs.rs/hangulang"
+readme = "README.md"
 keywords = ["hwp", "hwpx", "doclang", "converter", "korean"]
 categories = ["parser-implementations", "text-processing"]
+include = [
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/docs/**",
+    "/src/**",
+    "/examples/**",
+    "/tests/**",
+    "!**/.DS_Store",
+]
 
 [dependencies]
 # rhwp is not published on crates.io (HTTP 403) — pin to exact commit for reproducibility.
