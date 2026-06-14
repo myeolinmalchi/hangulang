@@ -43,10 +43,10 @@
 //! | `SectionDef`           | `ControlOutcome::SectionMarker` for T8 page/thread handling |
 //! | `ColumnDef`            | `ControlOutcome::ColumnMarker` for T8 thread handling |
 //! | `HiddenComment`        | text-rescue paragraphs (carries body) + `LossEntry(Other,"hidden comment")` |
-//! | `Hyperlink`            | `LossEntry(Other)` with url/text (IR has no `<href>` inline yet — recorded) |
+//! | `Hyperlink`            | text-rescue: display text → plain block (HWP3-only; IR has no `<href>` inline, URL not yet extracted) + `LossEntry(Other)` |
 //! | `Bookmark`             | `LossEntry(Other, "bookmark: <name>")` |
-//! | `Ruby`                 | `LossEntry(Other, "ruby: <text>")` |
-//! | `CharOverlap`          | `LossEntry(Other, "char overlap")` |
+//! | `Ruby`                 | text-rescue: annotation text → plain block + `LossEntry(Other, "ruby: <text>")` |
+//! | `CharOverlap`          | text-rescue: overlapped glyphs → plain block + `LossEntry(Other, "char overlap")` |
 //! | `Field` / `Form`       | `LossEntry(Other, …)` describing the field/form |
 //! | `AutoNumber` / `NewNumber` / `PageNumberPos` / `PageHide` | silently skipped (page-numbering chrome, no body content) |
 //! | `Unknown`              | `LossEntry(Other, "unknown control 0x…")` |
@@ -198,15 +198,26 @@ pub(crate) fn convert_control(
 
         // ---- Loss-recorded metadata controls -----------------------------
         Control::Hyperlink(h) => {
+            // This variant is the HWP3 path only: the display text lives in the
+            // control (not the paragraph body run) and rhwp does not yet extract
+            // the URL (it sets `url = ""`). HWP5/HWPX hyperlinks instead arrive as
+            // `Control::Field` and keep their anchor text in the body run.
+            //
             // DocLang has <href uri="">, but the crate IR exposes no inline href
-            // node yet (Inline has Text/Styled/FootnoteRef/LineBreak/Tab only),
-            // so we record rather than emit. Revisit when Inline gains Href.
+            // node yet (Inline has Text/Styled/FootnoteRef/LineBreak/Tab only) and
+            // emitting one correctly needs field-range splicing — deferred to v2
+            // (see docs/v2-known-limitations.md). For now rescue the display text
+            // as a plain block so it is not silently dropped, and record the loss
+            // of the link semantics / URL.
             loss.push(LossEntry {
                 kind: LossKind::Other("hyperlink".to_string()),
                 location: ctx.location.to_string(),
-                detail: format!("hyperlink url={:?} text={:?}", h.url, h.text),
+                detail: format!(
+                    "hyperlink url={:?} text={:?} (anchor text rescued, link semantics dropped)",
+                    h.url, h.text
+                ),
             });
-            ControlOutcome::empty()
+            ControlOutcome::Blocks(rescue_text_block(&h.text))
         }
 
         Control::Bookmark(b) => {
@@ -219,21 +230,29 @@ pub(crate) fn convert_control(
         }
 
         Control::Ruby(r) => {
+            // 덧말: an annotation rendered above its base text (the base text is in
+            // the body run; this carries only the annotation). Rescue the
+            // annotation text so it is not dropped; record the loss of its ruby
+            // positioning/association.
             loss.push(LossEntry {
                 kind: LossKind::Other("ruby".to_string()),
                 location: ctx.location.to_string(),
-                detail: format!("ruby (덧말): {}", r.ruby_text),
+                detail: format!("ruby (덧말): {} (annotation text rescued)", r.ruby_text),
             });
-            ControlOutcome::empty()
+            ControlOutcome::Blocks(rescue_text_block(&r.ruby_text))
         }
 
         Control::CharOverlap(c) => {
+            // 글자겹침: the overlapped glyphs are stored in the control, not the
+            // body run. Rescue them as plain text so the characters survive;
+            // record the loss of the overlap rendering.
+            let overlapped: String = c.chars.iter().collect();
             loss.push(LossEntry {
                 kind: LossKind::Other("char overlap".to_string()),
                 location: ctx.location.to_string(),
-                detail: format!("char overlap (글자겹침): {}", c.chars.iter().collect::<String>()),
+                detail: format!("char overlap (글자겹침): {} (text rescued)", overlapped),
             });
-            ControlOutcome::empty()
+            ControlOutcome::Blocks(rescue_text_block(&overlapped))
         }
 
         Control::Field(f) => {
@@ -378,6 +397,25 @@ fn rescue_shape_paragraphs(shape: &ShapeObject) -> Vec<Paragraph> {
     out
 }
 
+/// Wrap a rescued plain-text string in a single unformatted [`Block::Paragraph`].
+///
+/// Used by controls whose text content has no DocLang counterpart (HWP3
+/// hyperlink display text, ruby annotations, overlapped glyphs): the text is
+/// preserved as a plain block rather than dropped. Whitespace-only / empty input
+/// yields no block so we never emit a blank paragraph.
+fn rescue_text_block(text: &str) -> Vec<Block> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Vec::new()
+    } else {
+        vec![Block::Paragraph {
+            content: vec![ir::Inline::Text(trimmed.to_string())],
+            lost: None,
+            prov: None,
+        }]
+    }
+}
+
 /// Map rhwp [`HeaderFooterApply`] onto the IR [`ir::HeaderFooterApply`].
 ///
 /// HWP distinguishes Both/Even/Odd; DocLang additionally has `First`, which HWP
@@ -393,7 +431,7 @@ fn map_apply(apply: HeaderFooterApply) -> ir::HeaderFooterApply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rhwp::model::control::{Bookmark, Equation, Hyperlink};
+    use rhwp::model::control::{Bookmark, CharOverlap, Equation, Hyperlink, Ruby};
     use rhwp::model::footnote::{Endnote, Footnote};
     use rhwp::model::header_footer::Header;
     use rhwp::model::image::Picture;
@@ -681,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn hyperlink_records_loss() {
+    fn hyperlink_rescues_text_and_records_loss() {
         let cp = count_paragraphs;
         let ct = dummy_table;
         let np = no_picture;
@@ -690,13 +728,96 @@ mod tests {
         let out = convert_control(
             &Control::Hyperlink(Hyperlink {
                 url: "https://x".to_string(),
-                text: "X".to_string(),
+                text: "Example".to_string(),
             }),
             &ctx,
             1,
             &mut loss,
         );
+        // Display text survives as a plain paragraph; link semantics are loss.
+        assert_eq!(
+            out,
+            ControlOutcome::Blocks(vec![Block::Paragraph {
+                content: vec![ir::Inline::Text("Example".to_string())],
+                lost: None,
+                prov: None,
+            }])
+        );
+        assert_eq!(loss.len(), 1);
+    }
+
+    #[test]
+    fn hyperlink_empty_text_emits_no_block() {
+        let cp = count_paragraphs;
+        let ct = dummy_table;
+        let np = no_picture;
+        let ctx = stub_ctx(Mode::Lean, &cp, &ct, &np);
+        let mut loss = LossReport::new();
+        let out = convert_control(
+            &Control::Hyperlink(Hyperlink {
+                url: "https://x".to_string(),
+                text: "   ".to_string(),
+            }),
+            &ctx,
+            1,
+            &mut loss,
+        );
+        // No display text → no rescued block, but the loss is still recorded.
         assert_eq!(out, ControlOutcome::empty());
+        assert_eq!(loss.len(), 1);
+    }
+
+    #[test]
+    fn ruby_rescues_annotation_and_records_loss() {
+        let cp = count_paragraphs;
+        let ct = dummy_table;
+        let np = no_picture;
+        let ctx = stub_ctx(Mode::Lean, &cp, &ct, &np);
+        let mut loss = LossReport::new();
+        let out = convert_control(
+            &Control::Ruby(Ruby {
+                ruby_text: "가나다".to_string(),
+                ..Default::default()
+            }),
+            &ctx,
+            1,
+            &mut loss,
+        );
+        assert_eq!(
+            out,
+            ControlOutcome::Blocks(vec![Block::Paragraph {
+                content: vec![ir::Inline::Text("가나다".to_string())],
+                lost: None,
+                prov: None,
+            }])
+        );
+        assert_eq!(loss.len(), 1);
+    }
+
+    #[test]
+    fn char_overlap_rescues_glyphs_and_records_loss() {
+        let cp = count_paragraphs;
+        let ct = dummy_table;
+        let np = no_picture;
+        let ctx = stub_ctx(Mode::Lean, &cp, &ct, &np);
+        let mut loss = LossReport::new();
+        let out = convert_control(
+            &Control::CharOverlap(CharOverlap {
+                chars: vec!['企', '業'],
+                ..Default::default()
+            }),
+            &ctx,
+            1,
+            &mut loss,
+        );
+        assert_eq!(
+            out,
+            ControlOutcome::Blocks(vec![Block::Paragraph {
+                content: vec![ir::Inline::Text("企業".to_string())],
+                lost: None,
+                prov: None,
+            }])
+        );
         assert_eq!(loss.len(), 1);
     }
 }

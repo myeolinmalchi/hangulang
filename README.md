@@ -241,6 +241,12 @@ payload에서 bbox가 없을 때는 `not_requested`, `no_provenance`, `unresolve
 않다는 것은, 예를 들어 인제스천 파이프라인이 해당 파일을 조용히 누락시키는 대신
 더 풍부한(예: VLM) 경로로 분기시킬 수 있다는 의미입니다.
 
+DocLang 대응 요소가 없는 일부 컨트롤(HWP3 하이퍼링크 표시 텍스트, 덧말(Ruby),
+글자겹침(CharOverlap))은 텍스트를 버리지 않고 평문 블록으로 **구제**하며, 잃은
+의미(링크/덧말/겹침)는 `LossEntry`로 기록합니다. 의도적으로 v2로 미룬 변환 한계
+(인라인 `<href>`, 인텍스트 객체 위치, 미주 별도 표현 등)는
+[`docs/v2-known-limitations.md`](docs/v2-known-limitations.md)에 정리되어 있습니다.
+
 ---
 
 ## 아키텍처

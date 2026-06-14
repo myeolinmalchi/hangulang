@@ -254,16 +254,26 @@ fn record_char_shape_loss(
     }
 
     if !*font_recorded {
-        // font_ids[0] is the 한글 (default) face; resolve a human-readable name
-        // when available.  Any present font face / non-zero size is loss.
-        let font = resources::font_name(doc_info, 0, cs.font_ids[0]);
-        let has_font = font.map(|n| !n.is_empty()).unwrap_or(false);
-        if has_font || cs.base_size != 0 {
-            let detail = match font {
-                Some(name) if !name.is_empty() => {
-                    format!("font={}, base_size={}", name, cs.base_size)
+        // `font_ids` carries one face per language slot (한글/영문/한자/일어/기타/
+        // 기호/사용자). A face in *any* slot is information DocLang cannot express,
+        // so scan all of them rather than only slot 0 (한글) — otherwise an
+        // English/CJK/symbol-only face goes unreported. Report the first resolved
+        // face along with its slot.
+        let resolved = cs
+            .font_ids
+            .iter()
+            .enumerate()
+            .find_map(|(lang, &fid)| {
+                resources::font_name(doc_info, lang, fid)
+                    .filter(|n| !n.is_empty())
+                    .map(|n| (lang, n))
+            });
+        if resolved.is_some() || cs.base_size != 0 {
+            let detail = match resolved {
+                Some((lang, name)) => {
+                    format!("font={} (lang slot {}), base_size={}", name, lang, cs.base_size)
                 }
-                _ => format!("font_id={}, base_size={}", cs.font_ids[0], cs.base_size),
+                None => format!("font_id={}, base_size={}", cs.font_ids[0], cs.base_size),
             };
             loss.push(LossEntry {
                 kind: LossKind::FontInfo,
