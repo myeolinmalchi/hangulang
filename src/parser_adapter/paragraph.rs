@@ -122,13 +122,29 @@ pub(crate) fn convert_paragraph_prov(
     if !inlines.is_empty() {
         let block = match resources::para_shape(doc_info, para.para_shape_id) {
             Some(ps) => match ps.head_type {
-                HeadType::Outline => Block::Heading {
-                    // para_level is 0-based (0..=6); DocLang headings are 1..=6.
-                    level: (ps.para_level + 1).clamp(1, 6),
-                    content: inlines,
-                    lost: None,
-                    prov: text_prov,
-                },
+                HeadType::Outline => {
+                    // para_level is 0-based; DocLang headings are 1..=6. Levels
+                    // deeper than 6 are clamped — record the loss so deep outline
+                    // hierarchies are not silently flattened without an audit trail.
+                    let raw_level = ps.para_level as u16 + 1;
+                    let level = raw_level.clamp(1, 6) as u8;
+                    if raw_level > 6 {
+                        loss.push(LossEntry {
+                            kind: LossKind::Other("heading-level-clamped".to_string()),
+                            location: location.to_string(),
+                            detail: format!(
+                                "outline level {} clamped to {} (DocLang headings are 1–6)",
+                                raw_level, level
+                            ),
+                        });
+                    }
+                    Block::Heading {
+                        level,
+                        content: inlines,
+                        lost: None,
+                        prov: text_prov,
+                    }
+                }
                 HeadType::Number => single_item_list(true, inlines, text_prov),
                 HeadType::Bullet => single_item_list(false, inlines, text_prov),
                 HeadType::None => Block::Paragraph {
