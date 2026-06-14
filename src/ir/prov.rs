@@ -33,12 +33,20 @@ pub struct Prov {
 impl Prov {
     /// A text-block provenance (no owning control).
     pub fn text(section: usize, para: usize) -> Self {
-        Prov { section, para, ctrl: None }
+        Prov {
+            section,
+            para,
+            ctrl: None,
+        }
     }
 
     /// An object-block provenance referencing `controls[ctrl]`.
     pub fn object(section: usize, para: usize, ctrl: usize) -> Self {
-        Prov { section, para, ctrl: Some(ctrl) }
+        Prov {
+            section,
+            para,
+            ctrl: Some(ctrl),
+        }
     }
 }
 
@@ -50,6 +58,10 @@ impl Prov {
 /// order `x_min, y_min, x_max, y_max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
+    /// Zero-based page index that owns this box.
+    ///
+    /// Multi-page blocks use the first page on which the block appears.
+    pub page: u32,
     /// Left edge (normalised 0..=512).
     pub x_min: u16,
     /// Top edge (normalised 0..=512).
@@ -95,7 +107,21 @@ impl Location {
     /// the page dimensions in pixels. `x` normalises against `page_w`, `y`
     /// against `page_h`.
     pub fn from_px_box(x: f64, y: f64, w: f64, h: f64, page_w: f64, page_h: f64) -> Self {
+        Self::from_px_box_on_page(0, x, y, w, h, page_w, page_h)
+    }
+
+    /// Build a normalised [`Location`] from a pixel-space box on `page`.
+    pub fn from_px_box_on_page(
+        page: u32,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        page_w: f64,
+        page_h: f64,
+    ) -> Self {
         Location {
+            page,
             x_min: normalize(x, page_w),
             y_min: normalize(y, page_h),
             x_max: normalize(x + w, page_w),
@@ -145,6 +171,7 @@ mod tests {
     fn from_px_box_normalises_each_axis_independently() {
         // 800x1000 page, box at (400,500) size 200x100.
         let loc = Location::from_px_box(400.0, 500.0, 200.0, 100.0, 800.0, 1000.0);
+        assert_eq!(loc.page, 0);
         assert_eq!(loc.x_min, 256); // 400/800*512
         assert_eq!(loc.y_min, 256); // 500/1000*512
         assert_eq!(loc.x_max, 384); // 600/800*512
@@ -152,8 +179,28 @@ mod tests {
     }
 
     #[test]
+    fn from_px_box_on_page_keeps_page_index() {
+        let loc = Location::from_px_box_on_page(3, 0.0, 0.0, 10.0, 10.0, 100.0, 100.0);
+        assert_eq!(loc.page, 3);
+    }
+
+    #[test]
     fn prov_constructors() {
-        assert_eq!(Prov::text(0, 3), Prov { section: 0, para: 3, ctrl: None });
-        assert_eq!(Prov::object(1, 2, 4), Prov { section: 1, para: 2, ctrl: Some(4) });
+        assert_eq!(
+            Prov::text(0, 3),
+            Prov {
+                section: 0,
+                para: 3,
+                ctrl: None
+            }
+        );
+        assert_eq!(
+            Prov::object(1, 2, 4),
+            Prov {
+                section: 1,
+                para: 2,
+                ctrl: Some(4)
+            }
+        );
     }
 }

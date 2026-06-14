@@ -120,7 +120,6 @@ pub(crate) fn build_location_map(data: &[u8], document: &Document) -> LocationMa
 /// Inner builder once a [`DocumentCore`] is available (kept separate so it can
 /// be unit-tested with a synthetic core / document in the future).
 fn build_from_core(core: &DocumentCore, document: &Document) -> LocationMap {
-
     let mut acc: HashMap<Prov, Accum> = HashMap::new();
 
     // Precompute, per section, the (para, control) of its sole Header/Footer
@@ -153,7 +152,8 @@ fn build_from_core(core: &DocumentCore, document: &Document) -> LocationMap {
         .map(|(prov, a)| {
             (
                 prov,
-                Location::from_px_box(
+                Location::from_px_box_on_page(
+                    a.page,
                     a.bx.x0,
                     a.bx.y0,
                     a.bx.x1 - a.bx.x0,
@@ -443,13 +443,28 @@ mod tests {
             in_textbox: false,
             in_note: false,
         };
-        record(&mut acc, prov, &BoundingBox::new(10.0, 10.0, 5.0, 5.0), ctx0);
+        record(
+            &mut acc,
+            prov,
+            &BoundingBox::new(10.0, 10.0, 5.0, 5.0),
+            ctx0,
+        );
         // Same page widens.
-        record(&mut acc, prov, &BoundingBox::new(10.0, 20.0, 5.0, 5.0), ctx0);
+        record(
+            &mut acc,
+            prov,
+            &BoundingBox::new(10.0, 20.0, 5.0, 5.0),
+            ctx0,
+        );
         // Later page is ignored.
         let mut ctx1 = ctx0;
         ctx1.page = 1;
-        record(&mut acc, prov, &BoundingBox::new(0.0, 0.0, 100.0, 100.0), ctx1);
+        record(
+            &mut acc,
+            prov,
+            &BoundingBox::new(0.0, 0.0, 100.0, 100.0),
+            ctx1,
+        );
         let a = acc.get(&prov).unwrap();
         assert_eq!(a.page, 0);
         assert_eq!(a.bx.y1, 25.0); // widened by the same-page record only

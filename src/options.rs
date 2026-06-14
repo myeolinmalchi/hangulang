@@ -1,3 +1,5 @@
+use crate::resources::ResourcePolicy;
+
 /// DocLang spec version targeted by this crate.
 ///
 /// The orchestrator re-exports this from `crate::DOCLANG_VERSION`; this local
@@ -41,6 +43,13 @@ pub struct ConvertOptions {
     /// `x_min, y_min, x_max, y_max` in element-head order on each block that
     /// resolved a box. Blocks with no resolvable geometry are emitted unchanged.
     pub with_location: bool,
+    /// How picture and attachment bytes are referenced by exporters.
+    ///
+    /// The default is [`ResourcePolicy::Inline`], preserving the original
+    /// self-contained XML output. Asset policies produce deterministic resource
+    /// names from block locations so XML, Markdown, and semantic payloads can
+    /// agree on the same references.
+    pub resource_policy: ResourcePolicy,
 }
 
 impl Default for ConvertOptions {
@@ -49,6 +58,7 @@ impl Default for ConvertOptions {
             mode: Mode::Lean,
             doclang_version: DOCLANG_VERSION,
             with_location: false,
+            resource_policy: ResourcePolicy::Inline,
         }
     }
 }

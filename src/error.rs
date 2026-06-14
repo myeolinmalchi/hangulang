@@ -23,4 +23,8 @@ pub enum ConvertError {
     /// XML serialization failure (quick-xml).
     #[error("failed to serialize DocLang XML: {0}")]
     Xml(String),
+
+    /// JSON serialization failure.
+    #[error("failed to serialize semantic payload JSON: {0}")]
+    Json(String),
 }

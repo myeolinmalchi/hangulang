@@ -19,13 +19,10 @@
 //! adapter trim-normalises paragraph whitespace, so the writer treats element
 //! content whitespace as insignificant.
 
+pub(crate) mod custom;
 pub mod escape;
 pub mod inline;
-pub(crate) mod custom;
 pub(crate) mod otsl;
-
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 
 use crate::error::ConvertError;
 use crate::ir::block::{Block, HeaderFooterApply, ListItem};
@@ -34,6 +31,7 @@ use crate::ir::prov::{Location, LocationMap, Prov, LOCATION_RESOLUTION};
 use crate::ir::{Section, SirDocument};
 use crate::loss::{LossEntry, LossKind, LossReport};
 use crate::options::{ConvertOptions, Mode};
+use crate::resources::resolve_resource;
 
 use custom::{record_loss, write_custom_payload, write_lost_as_custom};
 use escape::{escape_attr, escape_text};
@@ -128,7 +126,11 @@ fn write_block(
     loss: &mut LossReport,
 ) {
     match block {
-        Block::Paragraph { content, lost, prov } => {
+        Block::Paragraph {
+            content,
+            lost,
+            prov,
+        } => {
             out.push_str("<text>");
             // Element-head order: (lost→custom is LAST, so) location precedes it.
             emit_location(out, resolve_loc(opts, locs, *prov));
@@ -137,7 +139,12 @@ fn write_block(
             out.push_str("</text>");
         }
 
-        Block::Heading { level, content, lost, prov } => {
+        Block::Heading {
+            level,
+            content,
+            lost,
+            prov,
+        } => {
             let lvl = clamp_level(*level);
             out.push_str("<heading level=\"");
             out.push_str(&lvl.to_string());
@@ -148,7 +155,12 @@ fn write_block(
             out.push_str("</heading>");
         }
 
-        Block::List { ordered, items, lost, prov } => {
+        Block::List {
+            ordered,
+            items,
+            lost,
+            prov,
+        } => {
             out.push_str("<list class=\"");
             out.push_str(if *ordered { "ordered" } else { "unordered" });
             out.push_str("\">");
@@ -166,19 +178,19 @@ fn write_block(
         }
 
         Block::Picture {
-            data, extension, lost, prov, ..
+            data,
+            extension,
+            lost,
+            prov,
+            ..
         } => {
-            let mime = mime_for_extension(extension);
-            let encoded = BASE64.encode(data);
+            let resource = resolve_resource(&opts.resource_policy, loc, extension, data);
             out.push_str("<picture>");
             // Element head: location precedes `<custom>` (lost) which precedes `<src>`.
             emit_location(out, resolve_loc(opts, locs, *prov));
             emit_or_record_lost(out, lost.as_ref(), loc, opts, loss);
-            out.push_str("<src uri=\"data:");
-            out.push_str(mime);
-            out.push_str(";base64,");
-            // base64 alphabet is attribute-safe, but escape defensively.
-            out.push_str(&escape_attr(&encoded));
+            out.push_str("<src uri=\"");
+            out.push_str(&escape_attr(&resource.uri));
             out.push_str("\"/></picture>");
         }
 
@@ -190,7 +202,11 @@ fn write_block(
             out.push_str("<page_break/>");
         }
 
-        Block::Footnote { number: _, content, prov } => {
+        Block::Footnote {
+            number: _,
+            content,
+            prov,
+        } => {
             // DocLang footnotes are numbered implicitly by document order; the
             // schema (`component_with_semantic_seq`) does not permit a `number`
             // attribute, so the IR's number is intentionally dropped here.
@@ -200,7 +216,11 @@ fn write_block(
             out.push_str("</footnote>");
         }
 
-        Block::PageHeader { content, apply, prov } => {
+        Block::PageHeader {
+            content,
+            apply,
+            prov,
+        } => {
             record_apply_loss(loss, apply, loc, "page_header");
             out.push_str("<page_header>");
             emit_location(out, resolve_loc(opts, locs, *prov));
@@ -208,7 +228,11 @@ fn write_block(
             out.push_str("</page_header>");
         }
 
-        Block::PageFooter { content, apply, prov } => {
+        Block::PageFooter {
+            content,
+            apply,
+            prov,
+        } => {
             record_apply_loss(loss, apply, loc, "page_footer");
             out.push_str("<page_footer>");
             emit_location(out, resolve_loc(opts, locs, *prov));
@@ -388,12 +412,7 @@ fn thread_id_to_int(thread_id: &str) -> u64 {
 /// headers), so emitting the distinction would produce schema-invalid XML.
 /// We therefore drop it from the output and record a [`LossKind::SectionSettings`]
 /// entry. `All` is the representable default and produces no loss.
-fn record_apply_loss(
-    loss: &mut LossReport,
-    apply: &HeaderFooterApply,
-    loc: &str,
-    element: &str,
-) {
+fn record_apply_loss(loss: &mut LossReport, apply: &HeaderFooterApply, loc: &str, element: &str) {
     let scope = match apply {
         HeaderFooterApply::All => return,
         HeaderFooterApply::Even => "even pages",
@@ -410,18 +429,6 @@ fn record_apply_loss(
     });
 }
 
-/// Map a lower-case image file extension to a MIME type for data URIs.
-fn mime_for_extension(ext: &str) -> &'static str {
-    match ext.to_ascii_lowercase().as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        "tif" | "tiff" => "image/tiff",
-        _ => "application/octet-stream",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +436,8 @@ mod tests {
     use crate::ir::inline::Inline;
     use crate::ir::style::StyleFlags;
     use crate::ir::{Section, SirDocument};
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
 
     fn convert(blocks: Vec<Block>) -> (String, LossReport) {
         let doc = SirDocument {
@@ -692,13 +701,22 @@ mod tests {
             namespace: "hwp:geometry".into(),
             payload: "shape=box;width=51024".into(),
         }]);
-        assert!(xml.contains("<group><custom>"), "must wrap custom in a group");
-        assert!(!xml.contains("ns=\""), "custom must not carry an ns attribute");
+        assert!(
+            xml.contains("<group><custom>"),
+            "must wrap custom in a group"
+        );
+        assert!(
+            !xml.contains("ns=\""),
+            "custom must not carry an ns attribute"
+        );
         assert!(xml.contains("<hwp_prop name=\"ns\" value=\"hwp:geometry\"/>"));
         assert!(xml.contains("<hwp_prop name=\"shape\" value=\"box\"/>"));
         assert!(xml.contains("<hwp_prop name=\"width\" value=\"51024\"/>"));
         assert!(xml.contains("</custom></group>"));
-        assert!(loss.is_empty(), "preserve mode should not record loss for Custom blocks");
+        assert!(
+            loss.is_empty(),
+            "preserve mode should not record loss for Custom blocks"
+        );
     }
 
     #[test]
@@ -736,8 +754,7 @@ mod tests {
         // The continuation distinction is unrepresentable → recorded as a loss.
         assert!(
             loss.iter()
-                .any(|e| e.kind == LossKind::SectionSettings
-                    && e.detail.contains("continuation")),
+                .any(|e| e.kind == LossKind::SectionSettings && e.detail.contains("continuation")),
             "continuation flattening must be recorded as a loss"
         );
     }

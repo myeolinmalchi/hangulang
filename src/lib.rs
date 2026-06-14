@@ -29,13 +29,19 @@ pub mod eqedit;
 pub mod error;
 pub mod ir;
 pub mod loss;
+pub mod markdown;
 pub mod options;
 pub mod parser_adapter;
+pub mod payload;
+pub mod resources;
 pub mod writer;
 
 pub use error::ConvertError;
 pub use loss::report::{LossEntry, LossKind, LossReport};
+pub use markdown::MarkdownExport;
 pub use options::{ConvertOptions, Mode};
+pub use payload::{SemanticPayload, PAYLOAD_SCHEMA_VERSION};
+pub use resources::{ResourceAsset, ResourcePolicy};
 
 /// DocLang spec version this crate targets. 0.x minor versions are breaking;
 /// the emitted root element carries this literal version attribute.
@@ -46,11 +52,38 @@ pub const DOCLANG_VERSION: &str = "0.6";
 pub struct ConvertOutcome {
     /// The serialised DocLang v0.6 XML string.
     pub xml: String,
+    /// Binary assets referenced by `xml` when `ResourcePolicy::AssetDir` is
+    /// selected. Empty for inline and URI-prefix resource policies.
+    pub assets: Vec<ResourceAsset>,
     /// Loss report: information that could not be represented in DocLang.
     ///
     /// In `Mode::Lean` this may be non-empty; in `Mode::Preserve` it is
     /// typically empty because unmappable properties are emitted as `<custom>`
     /// elements.
+    pub loss: LossReport,
+}
+
+/// Parsed and normalised semantic document before any concrete exporter runs.
+#[derive(Debug, Clone)]
+pub struct SemanticOutcome {
+    /// rhwp-agnostic Semantic IR.
+    pub document: ir::SirDocument,
+    /// Resolved layout boxes keyed by provenance. Empty when location extraction
+    /// is disabled or the layout pass cannot resolve a block.
+    pub locations: ir::prov::LocationMap,
+    /// Parser/adapter/eqedit losses collected before exporter-specific losses.
+    pub loss: LossReport,
+}
+
+/// The output of a successful [`convert_to_markdown`] call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkdownOutcome {
+    /// Markdown document text.
+    pub markdown: String,
+    /// Binary assets referenced by `markdown` when `ResourcePolicy::AssetDir`
+    /// is selected. Empty for inline and URI-prefix resource policies.
+    pub assets: Vec<ResourceAsset>,
+    /// Parser/adapter/eqedit plus Markdown writer losses.
     pub loss: LossReport,
 }
 
@@ -73,9 +106,36 @@ pub struct ConvertOutcome {
 /// Returns [`ConvertError`] for unsupported / encrypted / distribution
 /// documents, unrecognised format, or XML serialisation failures.
 pub fn convert(data: &[u8], opts: &ConvertOptions) -> Result<ConvertOutcome, ConvertError> {
+    let mut semantic = extract_semantic(data, opts)?;
+
+    // Phase B: serialise to DocLang XML, collecting any writer-side loss.
+    let mut writer_loss = LossReport::new();
+    let xml = writer::write_doclang_with_locations(
+        &semantic.document,
+        opts,
+        &semantic.locations,
+        &mut writer_loss,
+    )?;
+    semantic.loss.merge(writer_loss);
+
+    let assets = resources::collect_assets(&semantic.document, &opts.resource_policy);
+
+    Ok(ConvertOutcome {
+        xml,
+        assets,
+        loss: semantic.loss,
+    })
+}
+
+/// Parse and lower raw HWP 5.0 / HWPX bytes to the public Semantic IR.
+pub fn extract_semantic(
+    data: &[u8],
+    opts: &ConvertOptions,
+) -> Result<SemanticOutcome, ConvertError> {
     // Phase A: parse + lower to Semantic IR. Keep the parsed document so the v2
     // geometry pass can reuse it without a second parse.
     let (mut sir, mut loss, document) = parser_adapter::build_sir_with_document(data, opts.mode)?;
+    sir.doclang_version = opts.doclang_version;
 
     // eqedit pass: attempt LaTeX conversion for every Formula that has not yet
     // been converted (latex == None).  The adapter already sets raw_eqedit.
@@ -91,12 +151,48 @@ pub fn convert(data: &[u8], opts: &ConvertOptions) -> Result<ConvertOutcome, Con
         ir::prov::LocationMap::new()
     };
 
-    // Phase B: serialise to DocLang XML, collecting any writer-side loss.
-    let mut writer_loss = LossReport::new();
-    let xml = writer::write_doclang_with_locations(&sir, opts, &locs, &mut writer_loss)?;
-    loss.merge(writer_loss);
+    Ok(SemanticOutcome {
+        document: sir,
+        locations: locs,
+        loss,
+    })
+}
 
-    Ok(ConvertOutcome { xml, loss })
+/// Convert raw HWP 5.0 / HWPX bytes to a stable semantic payload.
+pub fn convert_to_payload(
+    data: &[u8],
+    opts: &ConvertOptions,
+) -> Result<SemanticPayload, ConvertError> {
+    let semantic = extract_semantic(data, opts)?;
+    Ok(payload::build_payload(
+        &semantic.document,
+        opts,
+        &semantic.locations,
+        &semantic.loss,
+    ))
+}
+
+/// Convert raw HWP 5.0 / HWPX bytes directly to Markdown.
+pub fn convert_to_markdown(
+    data: &[u8],
+    opts: &ConvertOptions,
+) -> Result<MarkdownOutcome, ConvertError> {
+    let mut semantic = extract_semantic(data, opts)?;
+    let mut writer_loss = LossReport::new();
+    let markdown = markdown::write_markdown(&semantic.document, opts, &mut writer_loss);
+    semantic.loss.merge(writer_loss);
+    Ok(MarkdownOutcome {
+        markdown: markdown.markdown,
+        assets: markdown.assets,
+        loss: semantic.loss,
+    })
+}
+
+/// Convert raw HWP 5.0 / HWPX bytes to pretty JSON.
+#[cfg(feature = "serde")]
+pub fn convert_to_json(data: &[u8], opts: &ConvertOptions) -> Result<String, ConvertError> {
+    let payload = convert_to_payload(data, opts)?;
+    serde_json::to_string_pretty(&payload).map_err(|err| ConvertError::Json(err.to_string()))
 }
 
 /// Walk every [`ir::Formula`] in the SIR tree and attempt `eqedit::convert`
@@ -206,7 +302,10 @@ mod tests {
     #[test]
     fn convert_empty_slice_returns_unsupported_format() {
         let result = convert(&[], &ConvertOptions::default());
-        assert!(matches!(result.unwrap_err(), ConvertError::UnsupportedFormat(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConvertError::UnsupportedFormat(_)
+        ));
     }
 
     /// Truncated CFB header (valid magic, garbage body) should be a Parse error.
