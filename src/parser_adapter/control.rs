@@ -203,12 +203,11 @@ pub(crate) fn convert_control(
             // the URL (it sets `url = ""`). HWP5/HWPX hyperlinks instead arrive as
             // `Control::Field` and keep their anchor text in the body run.
             //
-            // DocLang has <href uri="">, but the crate IR exposes no inline href
-            // node yet (Inline has Text/Styled/FootnoteRef/LineBreak/Tab only) and
-            // emitting one correctly needs field-range splicing — deferred to v2
-            // (see docs/v2-known-limitations.md). For now rescue the display text
-            // as a plain block so it is not silently dropped, and record the loss
-            // of the link semantics / URL.
+            // HWP5/HWPX hyperlinks are emitted as inline `<href>` (via the
+            // paragraph's field_ranges in inline.rs), but this HWP3 path has no
+            // extracted URL to anchor one. For now rescue the display text as a
+            // plain block so it is not silently dropped, and record the loss of
+            // the link semantics / URL.
             loss.push(LossEntry {
                 kind: LossKind::Other("hyperlink".to_string()),
                 location: ctx.location.to_string(),

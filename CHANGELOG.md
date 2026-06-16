@@ -28,4 +28,3 @@ semantic payload schema is versioned separately with `schema_version`.
   `location-page-layout-failed`) instead of returning a silent empty map.
 - Recorded table-cell collisions (`table-cell-collision`) when clamped anchors
   overlap, and capped the OTSL grid size to avoid OOM on malformed huge tables.
-- Documented deferred conversion gaps in `docs/v2-known-limitations.md`.
