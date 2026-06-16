@@ -63,18 +63,37 @@ pub(crate) fn extract_inlines(
     location: &str,
     loss: &mut LossReport,
 ) -> Vec<Inline> {
+    // The whole paragraph is one segment (no cuts).
+    extract_inline_segments(para, doc_info, location, loss, &[])
+        .pop()
+        .unwrap_or_default()
+}
+
+/// Like [`extract_inlines`] but splits the output at the given visible-char
+/// `cuts`, returning `cuts.len() + 1` inline segments. Segment `k` covers chars
+/// `[cuts[k-1], cuts[k])` (with implicit `0` / `char_len` bounds). `cuts` must be
+/// sorted ascending, de-duplicated, and within `0..=char_len`.
+///
+/// Per-paragraph loss de-duplication (font / colour) is shared across all
+/// segments, and a hyperlink span that straddles a cut is closed at the boundary
+/// and re-opened in the next segment.
+pub(crate) fn extract_inline_segments(
+    para: &Paragraph,
+    doc_info: &DocInfo,
+    location: &str,
+    loss: &mut LossReport,
+    cuts: &[usize],
+) -> Vec<Vec<Inline>> {
     let chars: Vec<char> = para.text.chars().collect();
+    let n_segments = cuts.len() + 1;
     if chars.is_empty() {
-        return Vec::new();
+        return vec![Vec::new(); n_segments];
     }
 
     // Per-paragraph loss de-duplication flags.
     let mut font_loss_recorded = false;
     let mut color_loss_recorded = false;
 
-    // Build run boundaries as visible-char indices.  `boundaries[i]` is the
-    // first char index covered by `char_shapes[i]`; the run extends up to the
-    // next boundary (or end of text).
     let runs = build_runs(para, chars.len());
 
     // Per visible-char index, which hyperlink URI (if any) covers it. When the
@@ -82,16 +101,14 @@ pub(crate) fn extract_inlines(
     // is byte-identical to the href-free path.
     let (href_at, uris) = hyperlink_href_map(para, chars.len());
 
-    // Convert each run into (style, text-slice) then walk the slice splitting on
-    // control chars (tab / line-break / object marker).  Output goes either to
-    // the top-level `inlines` or, while inside a hyperlink span, into the open
-    // href's content accumulator.
-    let mut inlines: Vec<Inline> = Vec::new();
+    let mut segments: Vec<Vec<Inline>> = Vec::with_capacity(n_segments);
+    let mut inlines: Vec<Inline> = Vec::new(); // current segment
     let mut href_open: Option<(usize, Vec<Inline>)> = None;
     let mut cur_href: Option<usize> = None;
     let mut pending_text = String::new();
     let mut pending_style = StyleFlags::default();
     let mut gi = 0usize; // running visible-char index across runs
+    let mut cut_idx = 0usize;
 
     for run in &runs {
         let style = match run.char_shape_id.and_then(|id| resources::char_shape(doc_info, id)) {
@@ -110,6 +127,20 @@ pub(crate) fn extract_inlines(
         };
 
         for &c in &chars[run.start..run.end] {
+            // Close the current segment at any cut boundary we have reached.
+            while cut_idx < cuts.len() && cuts[cut_idx] <= gi {
+                {
+                    let sink = href_open.as_mut().map(|(_, v)| v).unwrap_or(&mut inlines);
+                    flush_text(sink, &mut pending_text, &pending_style);
+                }
+                if let Some((uri_idx, content)) = href_open.take() {
+                    push_merged(&mut inlines, Inline::Href { uri: uris[uri_idx].clone(), content });
+                }
+                cur_href = None;
+                segments.push(std::mem::take(&mut inlines));
+                cut_idx += 1;
+            }
+
             // Enter/leave a hyperlink span before emitting this char.
             let want = href_at.get(gi).copied().flatten();
             if want != cur_href {
@@ -118,10 +149,7 @@ pub(crate) fn extract_inlines(
                     flush_text(sink, &mut pending_text, &pending_style);
                 }
                 if let Some((uri_idx, content)) = href_open.take() {
-                    push_merged(
-                        &mut inlines,
-                        Inline::Href { uri: uris[uri_idx].clone(), content },
-                    );
+                    push_merged(&mut inlines, Inline::Href { uri: uris[uri_idx].clone(), content });
                 }
                 if let Some(idx) = want {
                     href_open = Some((idx, Vec::new()));
@@ -164,8 +192,13 @@ pub(crate) fn extract_inlines(
     if let Some((uri_idx, content)) = href_open.take() {
         push_merged(&mut inlines, Inline::Href { uri: uris[uri_idx].clone(), content });
     }
+    segments.push(std::mem::take(&mut inlines));
 
-    inlines
+    // Any cuts at/after char_len produce trailing empty segments.
+    while segments.len() < n_segments {
+        segments.push(Vec::new());
+    }
+    segments
 }
 
 /// Flush buffered text into `sink` as a `Text` (plain) or `Styled` node.
@@ -736,5 +769,44 @@ mod tests {
         assert_eq!(super::hyperlink_uri(r"a\;b;rest"), "a;b");
         assert_eq!(super::hyperlink_uri("plain"), "plain");
         assert_eq!(super::hyperlink_uri("  spaced  ;x"), "spaced");
+    }
+
+    #[test]
+    fn segments_split_text_at_cuts() {
+        // "abcde" split at cut position 2 -> ["ab", "cde"].
+        let para = make_para("abcde", &[]);
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let segs = extract_inline_segments(&para, &di, "s0/p0", &mut loss, &[2]);
+        assert_eq!(
+            segs,
+            vec![
+                vec![Inline::Text("ab".to_string())],
+                vec![Inline::Text("cde".to_string())],
+            ]
+        );
+    }
+
+    #[test]
+    fn segments_with_no_cuts_match_extract_inlines() {
+        let para = make_para("hello world", &[]);
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let segs = extract_inline_segments(&para, &di, "s0/p0", &mut loss, &[]);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0], vec![Inline::Text("hello world".to_string())]);
+    }
+
+    #[test]
+    fn cut_at_zero_yields_empty_leading_segment() {
+        // Cut at 0 -> empty first segment, then the whole text.
+        let para = make_para("xy", &[]);
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let segs = extract_inline_segments(&para, &di, "s0/p0", &mut loss, &[0]);
+        assert_eq!(
+            segs,
+            vec![Vec::new(), vec![Inline::Text("xy".to_string())]]
+        );
     }
 }
