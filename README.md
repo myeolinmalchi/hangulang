@@ -244,9 +244,8 @@ payload에서 bbox가 없을 때는 `not_requested`, `no_provenance`, `unresolve
 
 DocLang 대응 요소가 없는 일부 컨트롤(덧말(Ruby), 글자겹침(CharOverlap))은 텍스트를
 버리지 않고 평문 블록으로 **구제**하며, 잃은 의미는 `LossEntry`로 기록합니다.
-하이퍼링크와 인텍스트 흐름 객체 위치는 v2에서 구현되었고, 남은 변환 한계(미주 별도
-표현, 좌표 미부착 영역 등)는
-[`docs/v2-known-limitations.md`](docs/v2-known-limitations.md)에 정리되어 있습니다.
+하이퍼링크와 인텍스트 흐름 객체 위치는 v2에서 구현되었습니다. 남은 변환 한계로는
+미주 별도 표현, 좌표 미부착 영역(글상자/각주/셀 내부) 등이 있습니다.
 
 ---
 
