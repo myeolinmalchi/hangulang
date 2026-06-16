@@ -146,7 +146,7 @@ pub fn extract_semantic(
     // disabled the map stays empty and the writer emits no <location> elements,
     // producing byte-identical output to a location-free build.
     let locs = if opts.with_location {
-        parser_adapter::build_location_map(data, &document)
+        parser_adapter::build_location_map(data, &document, &mut loss)
     } else {
         ir::prov::LocationMap::new()
     };

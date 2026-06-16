@@ -63,6 +63,7 @@ use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 use rhwp::DocumentCore;
 
 use crate::ir::prov::{Location, LocationMap, Prov};
+use crate::loss::report::{LossEntry, LossKind, LossReport};
 
 /// A pixel-space bounding box accumulator (min/max corners).
 #[derive(Clone, Copy)]
@@ -106,21 +107,42 @@ struct Accum {
 /// Build the full `Prov -> Location` map for `data`.
 ///
 /// `document` is the already-parsed model (used to resolve which body control a
-/// per-page Header/Footer group belongs to). Returns an empty map on any layout
-/// error for a page (best-effort: a page that fails to lay out contributes no
-/// boxes rather than aborting the whole conversion).
-pub(crate) fn build_location_map(data: &[u8], document: &Document) -> LocationMap {
+/// per-page Header/Footer group belongs to). Best-effort: a page that fails to
+/// lay out contributes no boxes rather than aborting the whole conversion.
+///
+/// Failures are surfaced through `loss` so a caller can tell *why* `<location>`
+/// coverage is empty/partial instead of seeing a silent empty map:
+/// - the whole layout core failing to build (no boxes at all), or
+/// - individual pages failing to lay out (partial coverage).
+pub(crate) fn build_location_map(
+    data: &[u8],
+    document: &Document,
+    loss: &mut LossReport,
+) -> LocationMap {
     let core = match DocumentCore::from_bytes(data) {
         Ok(c) => c,
-        Err(_) => return LocationMap::new(),
+        Err(_) => {
+            loss.push(LossEntry {
+                kind: LossKind::Other("location-unavailable".to_string()),
+                location: "document".to_string(),
+                detail: "layout core failed to build; no <location> coordinates emitted"
+                    .to_string(),
+            });
+            return LocationMap::new();
+        }
     };
-    build_from_core(&core, document)
+    build_from_core(&core, document, loss)
 }
 
 /// Inner builder once a [`DocumentCore`] is available (kept separate so it can
 /// be unit-tested with a synthetic core / document in the future).
-fn build_from_core(core: &DocumentCore, document: &Document) -> LocationMap {
+fn build_from_core(
+    core: &DocumentCore,
+    document: &Document,
+    loss: &mut LossReport,
+) -> LocationMap {
     let mut acc: HashMap<Prov, Accum> = HashMap::new();
+    let mut failed_pages: Vec<u32> = Vec::new();
 
     // Precompute, per section, the (para, control) of its sole Header/Footer
     // control so the per-page Header/Footer group bounds can be attached.
@@ -133,7 +155,10 @@ fn build_from_core(core: &DocumentCore, document: &Document) -> LocationMap {
     for page in 0..core.page_count() {
         let tree = match core.build_page_render_tree(page) {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(_) => {
+                failed_pages.push(page);
+                continue;
+            }
         };
         let (page_w, page_h, section) = page_dims(&tree.root);
         let ctx = Ctx {
@@ -146,6 +171,19 @@ fn build_from_core(core: &DocumentCore, document: &Document) -> LocationMap {
             in_note: false,
         };
         walk(&tree.root, ctx, &hf, &table_dims, &mut acc);
+    }
+
+    if !failed_pages.is_empty() {
+        loss.push(LossEntry {
+            kind: LossKind::Other("location-page-layout-failed".to_string()),
+            location: "document".to_string(),
+            detail: format!(
+                "{} of {} page(s) failed to lay out; <location> coverage is partial (pages {:?})",
+                failed_pages.len(),
+                core.page_count(),
+                failed_pages
+            ),
+        });
     }
 
     acc.into_iter()
