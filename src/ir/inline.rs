@@ -19,4 +19,8 @@ pub enum Inline {
     LineBreak,
     /// Tab character.
     Tab,
+    /// A hyperlink span: `content` is the anchor inline content and `uri` the
+    /// link target. Maps to DocLang `<href uri="…">…</href>`. Produced from a
+    /// HWP hyperlink field whose `field_ranges` cover the anchor text.
+    Href { uri: String, content: Vec<Inline> },
 }

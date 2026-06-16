@@ -51,7 +51,7 @@
 //! | `AutoNumber` / `NewNumber` / `PageNumberPos` / `PageHide` | silently skipped (page-numbering chrome, no body content) |
 //! | `Unknown`              | `LossEntry(Other, "unknown control 0x…")` |
 
-use rhwp::model::control::Control;
+use rhwp::model::control::{Control, FieldType};
 use rhwp::model::header_footer::HeaderFooterApply;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::shape::{CommonObjAttr, ShapeObject};
@@ -256,11 +256,17 @@ pub(crate) fn convert_control(
         }
 
         Control::Field(f) => {
-            loss.push(LossEntry {
-                kind: LossKind::Other("field".to_string()),
-                location: ctx.location.to_string(),
-                detail: format!("field type={} command={:?}", f.field_type_str(), f.command),
-            });
+            // Hyperlink fields are now represented inline as <href> (resolved via
+            // the paragraph's field_ranges in inline.rs), so recording a
+            // block-level loss for them would be misleading. Other field kinds
+            // have no inline representation yet and are still recorded.
+            if f.field_type != FieldType::Hyperlink {
+                loss.push(LossEntry {
+                    kind: LossKind::Other("field".to_string()),
+                    location: ctx.location.to_string(),
+                    detail: format!("field type={} command={:?}", f.field_type_str(), f.command),
+                });
+            }
             ControlOutcome::empty()
         }
 

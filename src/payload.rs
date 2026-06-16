@@ -64,6 +64,8 @@ pub struct PayloadInline {
     pub text: Option<String>,
     pub styles: Option<PayloadStyleFlags>,
     pub footnote_number: Option<usize>,
+    /// Link target for `kind == "href"`; `None` for every other inline kind.
+    pub uri: Option<String>,
     pub children: Vec<PayloadInline>,
 }
 
@@ -591,6 +593,7 @@ fn inline_payload(inline: &Inline) -> PayloadInline {
             text: Some(text.clone()),
             styles: None,
             footnote_number: None,
+            uri: None,
             children: Vec::new(),
         },
         Inline::Styled(flags, children) => PayloadInline {
@@ -598,6 +601,7 @@ fn inline_payload(inline: &Inline) -> PayloadInline {
             text: Some(inline_text(children)),
             styles: Some(style_payload(*flags)),
             footnote_number: None,
+            uri: None,
             children: children.iter().map(inline_payload).collect(),
         },
         Inline::FootnoteRef(number) => PayloadInline {
@@ -605,6 +609,7 @@ fn inline_payload(inline: &Inline) -> PayloadInline {
             text: None,
             styles: None,
             footnote_number: Some(*number),
+            uri: None,
             children: Vec::new(),
         },
         Inline::LineBreak => PayloadInline {
@@ -612,6 +617,7 @@ fn inline_payload(inline: &Inline) -> PayloadInline {
             text: Some("\n".to_string()),
             styles: None,
             footnote_number: None,
+            uri: None,
             children: Vec::new(),
         },
         Inline::Tab => PayloadInline {
@@ -619,7 +625,16 @@ fn inline_payload(inline: &Inline) -> PayloadInline {
             text: Some("\t".to_string()),
             styles: None,
             footnote_number: None,
+            uri: None,
             children: Vec::new(),
+        },
+        Inline::Href { uri, content } => PayloadInline {
+            kind: "href".to_string(),
+            text: Some(inline_text(content)),
+            styles: None,
+            footnote_number: None,
+            uri: Some(uri.clone()),
+            children: content.iter().map(inline_payload).collect(),
         },
     }
 }
@@ -644,6 +659,7 @@ fn inline_text(inlines: &[Inline]) -> String {
             Inline::FootnoteRef(number) => out.push_str(&format!("[^{number}]")),
             Inline::LineBreak => out.push('\n'),
             Inline::Tab => out.push('\t'),
+            Inline::Href { content, .. } => out.push_str(&inline_text(content)),
         }
     }
     out

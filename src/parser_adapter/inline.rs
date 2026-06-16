@@ -33,6 +33,7 @@
 //! `start_pos` becomes the visible char index of the first `char_offsets`
 //! entry `>= start_pos`.
 
+use rhwp::model::control::{Control, FieldType};
 use rhwp::model::document::DocInfo;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::style::CharShape;
@@ -76,23 +77,21 @@ pub(crate) fn extract_inlines(
     // next boundary (or end of text).
     let runs = build_runs(para, chars.len());
 
+    // Per visible-char index, which hyperlink URI (if any) covers it. When the
+    // document has no hyperlink fields this is all `None` and the emission below
+    // is byte-identical to the href-free path.
+    let (href_at, uris) = hyperlink_href_map(para, chars.len());
+
     // Convert each run into (style, text-slice) then walk the slice splitting on
-    // control chars (tab / line-break / object marker).
+    // control chars (tab / line-break / object marker).  Output goes either to
+    // the top-level `inlines` or, while inside a hyperlink span, into the open
+    // href's content accumulator.
     let mut inlines: Vec<Inline> = Vec::new();
+    let mut href_open: Option<(usize, Vec<Inline>)> = None;
+    let mut cur_href: Option<usize> = None;
     let mut pending_text = String::new();
     let mut pending_style = StyleFlags::default();
-
-    let flush = |inlines: &mut Vec<Inline>, text: &mut String, style: &StyleFlags| {
-        if text.is_empty() {
-            return;
-        }
-        let node = if style.is_plain() {
-            Inline::Text(std::mem::take(text))
-        } else {
-            Inline::Styled(*style, vec![Inline::Text(std::mem::take(text))])
-        };
-        push_merged(inlines, node);
-    };
+    let mut gi = 0usize; // running visible-char index across runs
 
     for run in &runs {
         let style = match run.char_shape_id.and_then(|id| resources::char_shape(doc_info, id)) {
@@ -111,34 +110,132 @@ pub(crate) fn extract_inlines(
         };
 
         for &c in &chars[run.start..run.end] {
+            // Enter/leave a hyperlink span before emitting this char.
+            let want = href_at.get(gi).copied().flatten();
+            if want != cur_href {
+                {
+                    let sink = href_open.as_mut().map(|(_, v)| v).unwrap_or(&mut inlines);
+                    flush_text(sink, &mut pending_text, &pending_style);
+                }
+                if let Some((uri_idx, content)) = href_open.take() {
+                    push_merged(
+                        &mut inlines,
+                        Inline::Href { uri: uris[uri_idx].clone(), content },
+                    );
+                }
+                if let Some(idx) = want {
+                    href_open = Some((idx, Vec::new()));
+                }
+                cur_href = want;
+            }
+
+            let sink = href_open.as_mut().map(|(_, v)| v).unwrap_or(&mut inlines);
             match c {
                 '\t' => {
-                    flush(&mut inlines, &mut pending_text, &pending_style);
-                    push_merged(&mut inlines, Inline::Tab);
+                    flush_text(sink, &mut pending_text, &pending_style);
+                    push_merged(sink, Inline::Tab);
                 }
                 '\n' => {
-                    flush(&mut inlines, &mut pending_text, &pending_style);
-                    push_merged(&mut inlines, Inline::LineBreak);
+                    flush_text(sink, &mut pending_text, &pending_style);
+                    push_merged(sink, Inline::LineBreak);
                 }
                 OBJECT_REPLACEMENT => {
                     // Object placeholder — handled via controls[] elsewhere.
-                    flush(&mut inlines, &mut pending_text, &pending_style);
+                    flush_text(sink, &mut pending_text, &pending_style);
                 }
                 _ => {
                     // If the style changed since the last buffered char, flush
                     // the previous span first so each span carries one style.
                     if !pending_text.is_empty() && pending_style != style {
-                        flush(&mut inlines, &mut pending_text, &pending_style);
+                        flush_text(sink, &mut pending_text, &pending_style);
                     }
                     pending_style = style;
                     pending_text.push(c);
                 }
             }
+            gi += 1;
         }
     }
-    flush(&mut inlines, &mut pending_text, &pending_style);
+
+    {
+        let sink = href_open.as_mut().map(|(_, v)| v).unwrap_or(&mut inlines);
+        flush_text(sink, &mut pending_text, &pending_style);
+    }
+    if let Some((uri_idx, content)) = href_open.take() {
+        push_merged(&mut inlines, Inline::Href { uri: uris[uri_idx].clone(), content });
+    }
 
     inlines
+}
+
+/// Flush buffered text into `sink` as a `Text` (plain) or `Styled` node.
+/// No-op when the buffer is empty.
+fn flush_text(sink: &mut Vec<Inline>, text: &mut String, style: &StyleFlags) {
+    if text.is_empty() {
+        return;
+    }
+    let node = if style.is_plain() {
+        Inline::Text(std::mem::take(text))
+    } else {
+        Inline::Styled(*style, vec![Inline::Text(std::mem::take(text))])
+    };
+    push_merged(sink, node);
+}
+
+/// Map each visible-char index to the index (into the returned `uris`) of the
+/// hyperlink that covers it, or `None`.
+///
+/// Only [`FieldType::Hyperlink`] fields (and the HWP3 [`Control::Hyperlink`])
+/// with a non-empty resolved URI participate; other field kinds are ignored.
+/// Ranges are clamped to `char_len` defensively.
+fn hyperlink_href_map(para: &Paragraph, char_len: usize) -> (Vec<Option<usize>>, Vec<String>) {
+    let mut map = vec![None; char_len];
+    let mut uris: Vec<String> = Vec::new();
+    for fr in &para.field_ranges {
+        let uri = match para.controls.get(fr.control_idx) {
+            Some(Control::Field(f)) if f.field_type == FieldType::Hyperlink => {
+                hyperlink_uri(&f.command)
+            }
+            Some(Control::Hyperlink(h)) => hyperlink_uri(&h.url),
+            _ => continue,
+        };
+        if uri.is_empty() {
+            continue;
+        }
+        let start = fr.start_char_idx.min(char_len);
+        let end = fr.end_char_idx.min(char_len);
+        if start >= end {
+            continue;
+        }
+        let uri_idx = uris.len();
+        uris.push(uri);
+        for slot in &mut map[start..end] {
+            *slot = Some(uri_idx);
+        }
+    }
+    (map, uris)
+}
+
+/// Extract the URL from a HWP hyperlink field `command`.
+///
+/// The command is the URL optionally followed by `;`-separated parameters, with
+/// `\` escaping `;` and `\` itself. We return the first (URL) segment, unescaped
+/// and trimmed.
+fn hyperlink_uri(command: &str) -> String {
+    let mut out = String::new();
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            }
+            ';' => break,
+            _ => out.push(c),
+        }
+    }
+    out.trim().to_string()
 }
 
 /// A contiguous formatting run expressed as a half-open visible-char range.
@@ -573,5 +670,71 @@ mod tests {
                 vec![Inline::Text("x".to_string())]
             )]
         );
+    }
+
+    #[test]
+    fn hyperlink_field_range_wraps_anchor_in_href() {
+        use rhwp::model::control::{Control, Field, FieldType};
+        use rhwp::model::paragraph::FieldRange;
+
+        // "see Open here" — anchor "Open" spans char indices 4..8.
+        let mut para = make_para("see Open here", &[]);
+        para.controls = vec![Control::Field(Field {
+            field_type: FieldType::Hyperlink,
+            command: "http://x.com".to_string(),
+            ..Default::default()
+        })];
+        para.field_ranges = vec![FieldRange {
+            start_char_idx: 4,
+            end_char_idx: 8,
+            control_idx: 0,
+        }];
+
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let out = extract_inlines(&para, &di, "s0/p0", &mut loss);
+        assert_eq!(
+            out,
+            vec![
+                Inline::Text("see ".to_string()),
+                Inline::Href {
+                    uri: "http://x.com".to_string(),
+                    content: vec![Inline::Text("Open".to_string())],
+                },
+                Inline::Text(" here".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_hyperlink_field_does_not_wrap() {
+        use rhwp::model::control::{Control, Field, FieldType};
+        use rhwp::model::paragraph::FieldRange;
+
+        let mut para = make_para("a Open b", &[]);
+        para.controls = vec![Control::Field(Field {
+            field_type: FieldType::ClickHere,
+            command: "hint".to_string(),
+            ..Default::default()
+        })];
+        para.field_ranges = vec![FieldRange {
+            start_char_idx: 2,
+            end_char_idx: 6,
+            control_idx: 0,
+        }];
+
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let out = extract_inlines(&para, &di, "s0/p0", &mut loss);
+        // No href wrapping for non-hyperlink fields; plain text only.
+        assert_eq!(out, vec![Inline::Text("a Open b".to_string())]);
+    }
+
+    #[test]
+    fn hyperlink_uri_takes_first_segment_unescaped() {
+        assert_eq!(super::hyperlink_uri("http://x.com;1;0"), "http://x.com");
+        assert_eq!(super::hyperlink_uri(r"a\;b;rest"), "a;b");
+        assert_eq!(super::hyperlink_uri("plain"), "plain");
+        assert_eq!(super::hyperlink_uri("  spaced  ;x"), "spaced");
     }
 }
