@@ -318,8 +318,10 @@ impl<'a> Parser<'a> {
             "bmatrix" => self.parse_matrix("bmatrix"),
             "dmatrix" => self.parse_matrix("vmatrix"),
             "cases" => self.parse_matrix("cases"),
-            // Decorations: accent applies to the following atom.
-            "bar" | "hat" | "vec" | "dot" | "tilde" | "acute" | "grave" => {
+            // Decorations: accent / over-under command applies to the following atom.
+            "bar" | "hat" | "vec" | "dot" | "ddot" | "tilde" | "acute" | "grave" | "check"
+            | "breve" | "mathring" | "widehat" | "widetilde" | "overline" | "underline"
+            | "overbrace" | "underbrace" | "overrightarrow" => {
                 let accent = decoration_command(&kw);
                 let target = self.parse_atom()?;
                 Ok(Node::Decoration(accent.to_string(), Box::new(target)))
@@ -464,9 +466,20 @@ fn decoration_command(word: &str) -> &'static str {
         "hat" => "hat",
         "vec" => "vec",
         "dot" => "dot",
+        "ddot" => "ddot",
         "tilde" => "tilde",
         "acute" => "acute",
         "grave" => "grave",
+        "check" => "check",
+        "breve" => "breve",
+        "mathring" => "mathring",
+        "widehat" => "widehat",
+        "widetilde" => "widetilde",
+        "overline" => "overline",
+        "underline" => "underline",
+        "overbrace" => "overbrace",
+        "underbrace" => "underbrace",
+        "overrightarrow" => "overrightarrow",
         _ => "bar",
     }
 }
