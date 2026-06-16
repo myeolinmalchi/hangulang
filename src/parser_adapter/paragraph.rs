@@ -117,76 +117,77 @@ pub(crate) fn convert_paragraph_prov(
         blocks.push(Block::PageBreak);
     }
 
-    // (2) Primary text block — classified by the paragraph's head_type.
-    let inlines = super::inline::extract_inlines(para, doc_info, location, loss);
-    if !inlines.is_empty() {
-        let block = match resources::para_shape(doc_info, para.para_shape_id) {
-            Some(ps) => match ps.head_type {
-                HeadType::Outline => {
-                    // para_level is 0-based; DocLang headings are 1..=6. Levels
-                    // deeper than 6 are clamped — record the loss so deep outline
-                    // hierarchies are not silently flattened without an audit trail.
-                    let raw_level = ps.para_level as u16 + 1;
-                    let level = raw_level.clamp(1, 6) as u8;
-                    if raw_level > 6 {
-                        loss.push(LossEntry {
-                            kind: LossKind::Other("heading-level-clamped".to_string()),
-                            location: location.to_string(),
-                            detail: format!(
-                                "outline level {} clamped to {} (DocLang headings are 1–6)",
-                                raw_level, level
-                            ),
-                        });
+    // (2)+(3) Primary text and the paragraph's block-level objects.
+    //
+    // Ordinary paragraphs interleave text and objects at the objects' true
+    // in-text character positions (v2). Headings and list items keep the simpler
+    // "text first, then trailing objects" layout: splitting a heading or list
+    // item across an embedded object is not meaningful.
+    let head_type = resources::para_shape(doc_info, para.para_shape_id).map(|ps| ps.head_type);
+    match head_type {
+        None | Some(HeadType::None) => {
+            interleave_ordinary(
+                para, document, doc_info, mode, footnote_counter, location, loss, &mut blocks,
+                body_pos, text_prov,
+            );
+        }
+        Some(ht) => {
+            let inlines = super::inline::extract_inlines(para, doc_info, location, loss);
+            if !inlines.is_empty() {
+                let block = match ht {
+                    HeadType::Outline => {
+                        // para_level is 0-based; DocLang headings are 1..=6. Levels
+                        // deeper than 6 are clamped — record the loss so deep
+                        // hierarchies are not silently flattened without an audit trail.
+                        let para_level = resources::para_shape(doc_info, para.para_shape_id)
+                            .map(|ps| ps.para_level)
+                            .unwrap_or(0);
+                        let raw_level = para_level as u16 + 1;
+                        let level = raw_level.clamp(1, 6) as u8;
+                        if raw_level > 6 {
+                            loss.push(LossEntry {
+                                kind: LossKind::Other("heading-level-clamped".to_string()),
+                                location: location.to_string(),
+                                detail: format!(
+                                    "outline level {} clamped to {} (DocLang headings are 1–6)",
+                                    raw_level, level
+                                ),
+                            });
+                        }
+                        Block::Heading {
+                            level,
+                            content: inlines,
+                            lost: None,
+                            prov: text_prov,
+                        }
                     }
-                    Block::Heading {
-                        level,
-                        content: inlines,
-                        lost: None,
-                        prov: text_prov,
-                    }
+                    HeadType::Number => single_item_list(true, inlines, text_prov),
+                    HeadType::Bullet => single_item_list(false, inlines, text_prov),
+                    HeadType::None => unreachable!("None handled in the other match arm"),
+                };
+                blocks.push(block);
+            }
+            if !para.controls.is_empty() {
+                for group in build_control_groups(
+                    para, document, doc_info, mode, footnote_counter, location, loss, body_pos,
+                ) {
+                    blocks.extend(group);
                 }
-                HeadType::Number => single_item_list(true, inlines, text_prov),
-                HeadType::Bullet => single_item_list(false, inlines, text_prov),
-                HeadType::None => Block::Paragraph {
-                    content: inlines,
-                    lost: None,
-                    prov: text_prov,
-                },
-            },
-            None => Block::Paragraph {
-                content: inlines,
-                lost: None,
-                prov: text_prov,
-            },
-        };
-        blocks.push(block);
-    }
-
-    // (3) Block-level objects carried by this paragraph's controls.
-    if !para.controls.is_empty() {
-        convert_controls(
-            para, document, doc_info, mode, footnote_counter, location, loss, &mut blocks, body_pos,
-        );
+            }
+        }
     }
 
     blocks
 }
 
-/// Lower a paragraph's `controls[]` into block-level objects, appending them to
-/// `blocks` in control order.
+/// Lower an ordinary (non-heading, non-list) paragraph, interleaving its text
+/// with its block-level objects at each object's true in-text character
+/// position (from [`Paragraph::control_text_positions`]).
 ///
-/// The control callbacks (`convert_paragraphs`, `convert_table`) and
-/// `convert_control` all need to write losses.  Rather than thread one
-/// `&mut LossReport` through re-entrant callbacks (which Rust's borrow checker
-/// forbids, and which would deadlock a `RefCell`), each callback and each
-/// dispatch builds its own scratch [`LossReport`] and merges it into the shared
-/// cell once the call returns — so no borrow is ever held across recursion.
-// Eight parameters are required here: para, document, and doc_info are separate
-// rhwp borrows that cannot be bundled without a wrapper type that would ripple
-// across all callers; the rest (mode, counter, location, loss, blocks) are
-// distinct mutable outputs or context values.
+/// When every object sits at the end of the text (the common case) this produces
+/// the same "text then objects" output as the heading/list path.
 #[allow(clippy::too_many_arguments)]
-fn convert_controls(
+fn interleave_ordinary(
     para: &Paragraph,
     document: &Document,
     doc_info: &DocInfo,
@@ -196,7 +197,112 @@ fn convert_controls(
     loss: &mut LossReport,
     blocks: &mut Vec<Block>,
     body_pos: Option<(usize, usize)>,
+    text_prov: Option<Prov>,
 ) {
+    let char_len = para.text.chars().count();
+
+    // Per-control block groups (control order), prov-stamped + footnote-advanced.
+    let groups = if para.controls.is_empty() {
+        Vec::new()
+    } else {
+        build_control_groups(
+            para, document, doc_info, mode, footnote_counter, location, loss, body_pos,
+        )
+    };
+
+    // Only objects that actually produced blocks get an in-text slot; markers and
+    // skipped controls (empty groups) must not split the text.
+    let positions = if para.controls.is_empty() {
+        Vec::new()
+    } else {
+        para.control_text_positions()
+    };
+
+    // Only true in-text *flow* objects (tables, pictures, formulas) are spliced
+    // at their character position. Page furniture (headers/footers), notes
+    // (footnotes/endnotes), rescued text boxes, etc. are not part of the text
+    // flow, so they keep the trailing "after the paragraph" placement.
+    let mut placed: Vec<(usize, Vec<Block>)> = Vec::new();
+    let mut trailing: Vec<Block> = Vec::new();
+    for (ci, g) in groups.into_iter().enumerate() {
+        if g.is_empty() {
+            continue;
+        }
+        if group_is_flow(&g) {
+            let pos = positions.get(ci).copied().unwrap_or(char_len).min(char_len);
+            placed.push((pos, g));
+        } else {
+            trailing.extend(g);
+        }
+    }
+    // Stable sort keeps control order within the same position.
+    placed.sort_by_key(|(p, _)| *p);
+
+    let mut cuts: Vec<usize> = placed.iter().map(|(p, _)| *p).collect();
+    cuts.dedup();
+
+    let segments = super::inline::extract_inline_segments(para, doc_info, location, loss, &cuts);
+
+    let mut pi = 0usize;
+    for (k, seg) in segments.into_iter().enumerate() {
+        if !seg.is_empty() {
+            blocks.push(Block::Paragraph {
+                content: seg,
+                lost: None,
+                prov: text_prov,
+            });
+        }
+        if k < cuts.len() {
+            let pos = cuts[k];
+            while pi < placed.len() && placed[pi].0 == pos {
+                blocks.append(&mut placed[pi].1);
+                pi += 1;
+            }
+        }
+    }
+    // Safety net: never drop object content if some slot did not match a cut.
+    while pi < placed.len() {
+        blocks.append(&mut placed[pi].1);
+        pi += 1;
+    }
+
+    // Non-flow objects trail the paragraph text, in control order.
+    blocks.append(&mut trailing);
+}
+
+/// True if a control's block group is an in-text *flow* object (table, picture,
+/// or formula) that should be spliced at its character position rather than
+/// trailing the paragraph.
+fn group_is_flow(group: &[Block]) -> bool {
+    !group.is_empty()
+        && group
+            .iter()
+            .all(|b| matches!(b, Block::Table(_) | Block::Picture { .. } | Block::Formula(_)))
+}
+
+/// Lower a paragraph's `controls[]` into block-level objects, returning one
+/// block group per control (in control order). Markers and skipped controls
+/// yield an empty group, so the returned vector is index-aligned with
+/// `para.controls` — callers can pair each group with its
+/// [`Paragraph::control_text_positions`] entry.
+///
+/// The control callbacks (`convert_paragraphs`, `convert_table`) and
+/// `convert_control` all need to write losses.  Rather than thread one
+/// `&mut LossReport` through re-entrant callbacks (which Rust's borrow checker
+/// forbids, and which would deadlock a `RefCell`), each callback and each
+/// dispatch builds its own scratch [`LossReport`] and merges it into the shared
+/// cell once the call returns — so no borrow is ever held across recursion.
+#[allow(clippy::too_many_arguments)]
+fn build_control_groups(
+    para: &Paragraph,
+    document: &Document,
+    doc_info: &DocInfo,
+    mode: Mode,
+    footnote_counter: &mut usize,
+    location: &str,
+    loss: &mut LossReport,
+    body_pos: Option<(usize, usize)>,
+) -> Vec<Vec<Block>> {
     let loss_cell = RefCell::new(loss);
 
     let convert_paras = |paras: &[Paragraph]| -> Vec<Block> {
@@ -224,6 +330,7 @@ fn convert_controls(
         resolve_picture: &resolve_pic,
     };
 
+    let mut groups: Vec<Vec<Block>> = Vec::with_capacity(para.controls.len());
     for (ci, ctrl) in para.controls.iter().enumerate() {
         let mut scratch = LossReport::new();
         let outcome = control::convert_control(ctrl, &ctx, *footnote_counter, &mut scratch);
@@ -243,13 +350,17 @@ fn convert_controls(
                         stamp_object_prov(b, prov);
                     }
                 }
-                blocks.append(&mut bs);
+                groups.push(bs);
             }
             // Layout markers carry no body content; the orchestrator (T8)
-            // handles section / thread semantics from the rhwp tree.
-            ControlOutcome::SectionMarker | ControlOutcome::ColumnMarker { .. } => {}
+            // handles section / thread semantics from the rhwp tree. They still
+            // occupy a control slot, so push an empty group to keep alignment.
+            ControlOutcome::SectionMarker | ControlOutcome::ColumnMarker { .. } => {
+                groups.push(Vec::new());
+            }
         }
     }
+    groups
 }
 
 /// Lower a slice of paragraphs into block content, applying list grouping.

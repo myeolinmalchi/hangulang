@@ -6,7 +6,7 @@
 use crate::ir::inline::Inline;
 use crate::ir::style::StyleFlags;
 
-use super::escape::escape_text;
+use super::escape::{escape_attr, escape_text};
 
 /// Canonical nesting order for inline style tags.
 ///
@@ -80,6 +80,15 @@ fn write_inline(out: &mut String, inline: &Inline) {
         // DocLang has no tab element. We emit a single space: the lean-mode goal
         // is logical structure, not pixel-accurate horizontal positioning.
         Inline::Tab => out.push(' '),
+
+        // Hyperlink span -> <href uri="…">anchor</href>.
+        Inline::Href { uri, content } => {
+            out.push_str("<href uri=\"");
+            out.push_str(&escape_attr(uri));
+            out.push_str("\">");
+            write_inlines(out, content);
+            out.push_str("</href>");
+        }
     }
 }
 
@@ -152,5 +161,28 @@ mod tests {
     #[test]
     fn footnote_ref_emits_nothing_inline() {
         assert_eq!(s(&[Inline::Text("a".into()), Inline::FootnoteRef(1)]), "a");
+    }
+
+    #[test]
+    fn href_emits_uri_and_anchor() {
+        let r = s(&[Inline::Href {
+            uri: "http://x.com?a=1&b=2".into(),
+            content: vec![Inline::Text("link".into())],
+        }]);
+        // URI attribute is attr-escaped; anchor content is text-escaped.
+        assert_eq!(r, "<href uri=\"http://x.com?a=1&amp;b=2\">link</href>");
+    }
+
+    #[test]
+    fn href_wraps_styled_anchor() {
+        let bold = StyleFlags {
+            bold: true,
+            ..Default::default()
+        };
+        let r = s(&[Inline::Href {
+            uri: "#sec".into(),
+            content: vec![Inline::Styled(bold, vec![Inline::Text("X".into())])],
+        }]);
+        assert_eq!(r, "<href uri=\"#sec\"><bold>X</bold></href>");
     }
 }

@@ -175,6 +175,47 @@ fn command_for_exact(word: &str) -> Option<&'static str> {
         "ldots" => "ldots",
         "vdots" => "vdots",
         "ddots" => "ddots",
+        // Delimiter symbols (used bare, not via left/right)
+        "langle" => "langle",
+        "rangle" => "rangle",
+        "lfloor" => "lfloor",
+        "rfloor" => "rfloor",
+        "lceil" => "lceil",
+        "rceil" => "rceil",
+        // More relations / logic
+        "perp" => "perp",
+        "parallel" => "parallel",
+        "mid" => "mid",
+        "vdash" => "vdash",
+        "models" => "models",
+        "asymp" => "asymp",
+        "doteq" => "doteq",
+        "prec" => "prec",
+        "succ" => "succ",
+        "preceq" => "preceq",
+        "succeq" => "succeq",
+        "top" => "top",
+        "bot" => "bot",
+        // More operators / symbols
+        "setminus" => "setminus",
+        "triangle" => "triangle",
+        "diamond" => "diamond",
+        "surd" => "surd",
+        "wp" => "wp",
+        "sharp" => "sharp",
+        "flat" => "flat",
+        "natural" => "natural",
+        // More arrows
+        "longrightarrow" => "longrightarrow",
+        "longleftarrow" => "longleftarrow",
+        "Longrightarrow" => "Longrightarrow",
+        "Longleftarrow" => "Longleftarrow",
+        "hookrightarrow" => "hookrightarrow",
+        "hookleftarrow" => "hookleftarrow",
+        "nearrow" => "nearrow",
+        "searrow" => "searrow",
+        "swarrow" => "swarrow",
+        "nwarrow" => "nwarrow",
         // Misc
         "prime" => "prime",
         "angle" => "angle",
@@ -532,5 +573,31 @@ mod tests {
     #[test]
     fn emit_binom() {
         assert_eq!(conv("binom {n} {k}"), "\\binom{n}{k}");
+    }
+
+    #[test]
+    fn emit_added_noarg_symbols() {
+        // Previously unrecognised symbols that fell through to \text{…}.
+        assert_eq!(conv("perp"), "\\perp");
+        assert_eq!(conv("parallel"), "\\parallel");
+        assert_eq!(conv("langle"), "\\langle");
+        assert_eq!(conv("setminus"), "\\setminus");
+        assert_eq!(conv("longrightarrow"), "\\longrightarrow");
+        // Case-insensitive lookup still applies.
+        assert_eq!(conv("PERP"), "\\perp");
+    }
+
+    #[test]
+    fn emit_added_decorations() {
+        assert_eq!(conv("overline x"), "\\overline{x}");
+        assert_eq!(conv("underline {x+1}"), "\\underline{x+1}");
+        assert_eq!(conv("widehat A"), "\\widehat{A}");
+        assert_eq!(conv("ddot x"), "\\ddot{x}");
+    }
+
+    #[test]
+    fn unknown_word_still_passes_through_as_text() {
+        // A genuinely unknown command-like word must still degrade, not resolve.
+        assert_eq!(conv("notacommand"), "\\text{notacommand}");
     }
 }

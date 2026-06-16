@@ -30,10 +30,15 @@ use crate::options::Mode;
 /// Build the v2 `<location>` map for already-parsed `document` + raw `data`.
 ///
 /// Re-layouts every page via the render tree and joins bounding boxes onto the
-/// IR provenance keys. Returns an empty map (no locations emitted) on any
-/// layout failure. Only called when `ConvertOptions::with_location` is set.
-pub(crate) fn build_location_map(data: &[u8], document: &Document) -> LocationMap {
-    geometry_pass::build_location_map(data, document)
+/// IR provenance keys. Returns an empty/partial map on layout failure and
+/// records the failure into `loss` so the caller can tell why coverage is empty.
+/// Only called when `ConvertOptions::with_location` is set.
+pub(crate) fn build_location_map(
+    data: &[u8],
+    document: &Document,
+    loss: &mut crate::loss::report::LossReport,
+) -> LocationMap {
+    geometry_pass::build_location_map(data, document, loss)
 }
 
 /// Detect, parse, and lower HWP/HWPX bytes into the Semantic IR.

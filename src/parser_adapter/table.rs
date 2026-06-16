@@ -42,6 +42,8 @@
 //! [`LossKind::Other`] entry is recorded; this keeps the OTSL writer's grid
 //! walk well-formed instead of panicking on an out-of-bounds anchor.
 
+use std::collections::HashSet;
+
 use rhwp::model::document::DocInfo;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::shape::Caption;
@@ -75,6 +77,10 @@ pub(crate) fn convert_table(
     let cols = table.col_count;
 
     let mut cells: Vec<IrTableCell> = Vec::with_capacity(table.cells.len());
+    // Track anchor positions already taken so clamping can flag collisions:
+    // two out-of-bounds cells clamped to the same corner would otherwise overlap
+    // silently. Well-formed tables never collide (every anchor is distinct).
+    let mut occupied: HashSet<(u16, u16)> = HashSet::with_capacity(table.cells.len());
     for cell in &table.cells {
         // Defensive: clamp anchor origins that fall outside the declared grid.
         // `rows`/`cols` of 0 would make every coordinate out of range; guard so
@@ -95,6 +101,16 @@ pub(crate) fn convert_table(
             });
             col = new_col;
             row = new_row;
+        }
+
+        // If the (possibly clamped) anchor lands on a position already taken,
+        // record the collision so the overlap is auditable rather than silent.
+        if !occupied.insert((row, col)) {
+            loss.push(LossEntry {
+                kind: LossKind::Other("table-cell-collision".to_string()),
+                location: location.to_string(),
+                detail: format!("cell anchor ({},{}) collides with an earlier cell", row, col),
+            });
         }
 
         // Spans must be at least 1; a malformed 0 span would yield an empty
@@ -319,6 +335,48 @@ mod tests {
             .filter(|e| matches!(&e.kind, LossKind::Other(s) if s == "table-cell-out-of-bounds"))
             .count();
         assert_eq!(other_count, 1);
+    }
+
+    #[test]
+    fn clamped_cells_colliding_on_same_anchor_are_recorded() {
+        let table = Table {
+            row_count: 2,
+            col_count: 2,
+            // Both out-of-bounds cells clamp to the same corner (1,1) → collision.
+            cells: vec![anchor(0, 0, 1, 1), anchor(5, 9, 1, 1), anchor(6, 8, 1, 1)],
+            ..Default::default()
+        };
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let _ = convert_table(&table, &di, "s0/tbl", &stub_convert, &mut loss);
+
+        let collisions = loss
+            .iter()
+            .filter(|e| matches!(&e.kind, LossKind::Other(s) if s == "table-cell-collision"))
+            .count();
+        assert_eq!(collisions, 1);
+    }
+
+    #[test]
+    fn well_formed_table_records_no_collision() {
+        let table = Table {
+            row_count: 2,
+            col_count: 2,
+            cells: vec![
+                anchor(0, 0, 1, 1),
+                anchor(1, 0, 1, 1),
+                anchor(0, 1, 1, 1),
+                anchor(1, 1, 1, 1),
+            ],
+            ..Default::default()
+        };
+        let di = DocInfo::default();
+        let mut loss = LossReport::new();
+        let _ = convert_table(&table, &di, "s0/tbl", &stub_convert, &mut loss);
+
+        assert!(loss
+            .iter()
+            .all(|e| !matches!(&e.kind, LossKind::Other(s) if s == "table-cell-collision")));
     }
 
     #[test]

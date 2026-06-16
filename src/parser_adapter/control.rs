@@ -51,7 +51,7 @@
 //! | `AutoNumber` / `NewNumber` / `PageNumberPos` / `PageHide` | silently skipped (page-numbering chrome, no body content) |
 //! | `Unknown`              | `LossEntry(Other, "unknown control 0x…")` |
 
-use rhwp::model::control::Control;
+use rhwp::model::control::{Control, FieldType};
 use rhwp::model::header_footer::HeaderFooterApply;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::shape::{CommonObjAttr, ShapeObject};
@@ -203,12 +203,11 @@ pub(crate) fn convert_control(
             // the URL (it sets `url = ""`). HWP5/HWPX hyperlinks instead arrive as
             // `Control::Field` and keep their anchor text in the body run.
             //
-            // DocLang has <href uri="">, but the crate IR exposes no inline href
-            // node yet (Inline has Text/Styled/FootnoteRef/LineBreak/Tab only) and
-            // emitting one correctly needs field-range splicing — deferred to v2
-            // (see docs/v2-known-limitations.md). For now rescue the display text
-            // as a plain block so it is not silently dropped, and record the loss
-            // of the link semantics / URL.
+            // HWP5/HWPX hyperlinks are emitted as inline `<href>` (via the
+            // paragraph's field_ranges in inline.rs), but this HWP3 path has no
+            // extracted URL to anchor one. For now rescue the display text as a
+            // plain block so it is not silently dropped, and record the loss of
+            // the link semantics / URL.
             loss.push(LossEntry {
                 kind: LossKind::Other("hyperlink".to_string()),
                 location: ctx.location.to_string(),
@@ -256,11 +255,17 @@ pub(crate) fn convert_control(
         }
 
         Control::Field(f) => {
-            loss.push(LossEntry {
-                kind: LossKind::Other("field".to_string()),
-                location: ctx.location.to_string(),
-                detail: format!("field type={} command={:?}", f.field_type_str(), f.command),
-            });
+            // Hyperlink fields are now represented inline as <href> (resolved via
+            // the paragraph's field_ranges in inline.rs), so recording a
+            // block-level loss for them would be misleading. Other field kinds
+            // have no inline representation yet and are still recorded.
+            if f.field_type != FieldType::Hyperlink {
+                loss.push(LossEntry {
+                    kind: LossKind::Other("field".to_string()),
+                    location: ctx.location.to_string(),
+                    detail: format!("field type={} command={:?}", f.field_type_str(), f.command),
+                });
+            }
             ControlOutcome::empty()
         }
 

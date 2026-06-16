@@ -214,6 +214,7 @@ payload에서 bbox가 없을 때는 `not_requested`, `no_provenance`, `unresolve
 | 개요 제목 | `<heading level="1–6">` | 글꼴 크기 추측이 아닌 개요 수준 기준 |
 | 목록(번호/글머리표) | `<list>` / `<ldiv>` / `<marker>` | 중첩 지원 |
 | 인라인 서식 | `<bold>` `<italic>` `<underline>` `<strikethrough>` `<superscript>` `<subscript>` | |
+| 하이퍼링크 | `<href uri="…">` | 앵커 구간을 `field_ranges`로 식별; 웹/mailto/내부 책갈피 |
 | 표 | OTSL (`<fcel>` `<ched>` `<lcel>` `<ucel>` `<xcel>` …) | 병합 · 중첩 셀 |
 | 수식 | `<formula>` (LaTeX) | EqEdit → LaTeX; 변환 누락 토큰은 보고됨 |
 | 이미지 | `<picture><src uri="…"/>` | 기본값은 인라인 base64; asset/URI 참조 정책 지원 |
@@ -241,11 +242,10 @@ payload에서 bbox가 없을 때는 `not_requested`, `no_provenance`, `unresolve
 않다는 것은, 예를 들어 인제스천 파이프라인이 해당 파일을 조용히 누락시키는 대신
 더 풍부한(예: VLM) 경로로 분기시킬 수 있다는 의미입니다.
 
-DocLang 대응 요소가 없는 일부 컨트롤(HWP3 하이퍼링크 표시 텍스트, 덧말(Ruby),
-글자겹침(CharOverlap))은 텍스트를 버리지 않고 평문 블록으로 **구제**하며, 잃은
-의미(링크/덧말/겹침)는 `LossEntry`로 기록합니다. 의도적으로 v2로 미룬 변환 한계
-(인라인 `<href>`, 인텍스트 객체 위치, 미주 별도 표현 등)는
-[`docs/v2-known-limitations.md`](docs/v2-known-limitations.md)에 정리되어 있습니다.
+DocLang 대응 요소가 없는 일부 컨트롤(덧말(Ruby), 글자겹침(CharOverlap))은 텍스트를
+버리지 않고 평문 블록으로 **구제**하며, 잃은 의미는 `LossEntry`로 기록합니다.
+하이퍼링크와 인텍스트 흐름 객체 위치는 v2에서 구현되었습니다. 남은 변환 한계로는
+미주 별도 표현, 좌표 미부착 영역(글상자/각주/셀 내부) 등이 있습니다.
 
 ---
 

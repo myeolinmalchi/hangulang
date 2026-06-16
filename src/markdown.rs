@@ -235,6 +235,14 @@ fn write_inline(out: &mut String, inline: &Inline) {
         Inline::FootnoteRef(number) => out.push_str(&format!("[^{number}]")),
         Inline::LineBreak => out.push('\n'),
         Inline::Tab => out.push(' '),
+        Inline::Href { uri, content } => {
+            // Markdown inline link: [anchor](uri).
+            out.push('[');
+            out.push_str(&inline_markdown(content));
+            out.push_str("](");
+            out.push_str(uri);
+            out.push(')');
+        }
     }
 }
 
