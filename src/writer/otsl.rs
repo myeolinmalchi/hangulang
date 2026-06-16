@@ -37,6 +37,15 @@ use super::write_blocks;
 use super::write_inlines;
 use super::{emit_location, resolve_loc};
 
+/// Upper bound on the reconstructed OTSL grid size (`rows * cols`).
+///
+/// Serialisation is O(rows*cols) in both memory (the occupancy grid) and output
+/// tokens, and `rows`/`cols` are `u16` so a malformed table could declare a
+/// ~4.3-billion-cell grid and exhaust memory. Tables beyond this cap are almost
+/// certainly corrupt; we drop their OTSL content and record the loss instead of
+/// risking OOM. One million cells comfortably exceeds any real HWP table.
+const MAX_TABLE_GRID_CELLS: usize = 1_000_000;
+
 /// What occupies a single position in the reconstructed table grid.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Occ {
@@ -92,6 +101,24 @@ pub(crate) fn write_table(
                 ),
             });
         }
+        out.push_str("</table>");
+        return;
+    }
+
+    // Guard against pathological geometries: the grid allocation and token
+    // stream are O(rows*cols). A malformed table declaring a huge grid could
+    // exhaust memory, so cap the reconstructed size — beyond it, record the loss
+    // and emit an empty table rather than risking OOM.
+    let grid_cells = rows.saturating_mul(cols);
+    if grid_cells > MAX_TABLE_GRID_CELLS {
+        loss.push(LossEntry {
+            kind: LossKind::Other("table-too-large".to_string()),
+            location: loc.to_string(),
+            detail: format!(
+                "table grid {rows}x{cols} ({grid_cells} cells) exceeds the \
+                 {MAX_TABLE_GRID_CELLS}-cell cap; OTSL content dropped"
+            ),
+        });
         out.push_str("</table>");
         return;
     }
@@ -467,6 +494,26 @@ mod tests {
         assert_eq!(
             loss.iter().next().unwrap().kind,
             LossKind::Other("table-overlapping-span".to_string())
+        );
+    }
+
+    #[test]
+    fn oversized_table_grid_is_capped_not_allocated() {
+        // 2000 x 2000 = 4,000,000 cells > MAX_TABLE_GRID_CELLS: must NOT allocate
+        // the grid; instead emit an empty table and record the loss.
+        let table = Table {
+            rows: 2000,
+            cols: 2000,
+            cells: vec![cell(0, 0, 1, 1, false, vec![para("a")])],
+            caption: None,
+            prov: None,
+        };
+        let (xml, loss) = emit(&table);
+        assert_eq!(xml, "<table></table>");
+        assert_eq!(loss.len(), 1);
+        assert_eq!(
+            loss.iter().next().unwrap().kind,
+            LossKind::Other("table-too-large".to_string())
         );
     }
 }
